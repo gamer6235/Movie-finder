@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	// 1. Render Port Scanner-ne fool cheyyan oru dummy HTTP Server
+	// 1. Render Port Scanner പ്രശ്നം ഒഴിവാക്കാനുള്ള Dummy HTTP Server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -63,46 +63,67 @@ func main() {
 
 	// Update handling loop
 	for update := range updates {
-		if update.Message == nil || len(update.Message.Photo) == 0 {
+		if update.Message == nil {
 			continue
 		}
 
-		go handlePhoto(ctx, bot, client, update.Message)
+		// Photos handle ചെയ്യാൻ
+		if len(update.Message.Photo) > 0 {
+			go handleMedia(ctx, bot, client, update.Message, "photo")
+		}
+
+		// Short Video Clips handle ചെയ്യാൻ
+		if update.Message.Video != nil {
+			go handleMedia(ctx, bot, client, update.Message, "video")
+		}
 	}
 }
 
-func handlePhoto(ctx context.Context, bot *tgbotapi.BotAPI, client *genai.Client, msg *tgbotapi.Message) {
+func handleMedia(ctx context.Context, bot *tgbotapi.BotAPI, client *genai.Client, msg *tgbotapi.Message, mediaType string) {
 	chatID := msg.Chat.ID
 
-	// Send processing status message
-	statusMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "🔎 Scene analyze cheyyunnu... Please wait!"))
+	statusMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "🔎 Media analyze cheyyunnu... Please wait!"))
 
-	// Get highest resolution photo
-	photos := msg.Photo
-	largestPhoto := photos[len(photos)-1]
+	var fileID string
+	var mimeType string
 
-	fileURL, err := bot.GetFileDirectURL(largestPhoto.FileID)
+	if mediaType == "photo" {
+		photos := msg.Photo
+		fileID = photos[len(photos)-1].FileID
+		mimeType = "image/jpeg"
+	} else if mediaType == "video" {
+		// 20MB Max size limit check
+		if msg.Video.FileSize > 20*1024*1024 {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Video size is too large! Please send clips under 20MB."))
+			return
+		}
+		fileID = msg.Video.FileID
+		mimeType = "video/mp4"
+	}
+
+	// Telegram Server-ൽ നിന്ന് Direct Link എടുക്കുന്നു
+	fileURL, err := bot.GetFileDirectURL(fileID)
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Image download URL error!"))
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Download URL ലഭിച്ചില്ല!"))
 		return
 	}
 
-	// Download image bytes
+	// Media ഡൗൺലോഡ് ചെയ്യുന്നു
 	resp, err := http.Get(fileURL)
 	if err != nil || resp.StatusCode != http.StatusOK {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Image download failed!"))
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Media download ചെയ്യാൻ കഴിഞ്ഞില്ല!"))
 		return
 	}
 	defer resp.Body.Close()
 
-	imgBytes, err := io.ReadAll(resp.Body)
+	mediaBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read image data!"))
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read media file!"))
 		return
 	}
 
 	// Gemini Prompt
-	prompt := `Analyze this scene carefully. Identify which movie or TV/web series this scene belongs to. 
+	prompt := `Analyze this movie/series scene carefully. Identify which movie or TV/web series this scene belongs to. 
 Provide response in this exact format:
 🎬 **Title:** [Movie/Series Name]
 📅 **Release Year:** [Year]
@@ -115,8 +136,8 @@ Provide response in this exact format:
 			Parts: []*genai.Part{
 				{
 					InlineData: &genai.Blob{
-						MIMEType: "image/jpeg",
-						Data:     imgBytes,
+						MIMEType: mimeType,
+						Data:     mediaBytes,
 					},
 				},
 				{
@@ -126,7 +147,7 @@ Provide response in this exact format:
 		},
 	}, nil)
 
-	// Delete status message
+	// Status message ഡിലീറ്റ് ചെയ്യൽ
 	deleteMsg := tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID)
 	bot.Request(deleteMsg)
 
@@ -135,13 +156,13 @@ Provide response in this exact format:
 		return
 	}
 
-	// Send Gemini result back
+	// ഫലം ടെലിഗ്രാമിൽ അയക്കുന്നു
 	if len(genResp.Candidates) > 0 && genResp.Candidates[0].Content != nil {
 		replyText := genResp.Candidates[0].Content.Parts[0].Text
 		reply := tgbotapi.NewMessage(chatID, replyText)
 		reply.ParseMode = "Markdown"
 		bot.Send(reply)
 	} else {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Could not identify the movie/series."))
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Movie/Series കണ്ടെത്താൻ കഴിഞ്ഞില്ല."))
 	}
 }
