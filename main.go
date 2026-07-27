@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"google.golang.org/genai"
@@ -39,6 +40,17 @@ func main() {
 		log.Fatal("❌ ERROR: GEMINI_API_KEY environment variable is missing or invalid!")
 	}
 
+	// Allowed Group ID എടുക്കുന്നു
+	allowedGroupIDStr := os.Getenv("ALLOWED_GROUP_ID")
+	var allowedGroupID int64 = 0
+	if allowedGroupIDStr != "" {
+		var parseErr error
+		allowedGroupID, parseErr = strconv.ParseInt(allowedGroupIDStr, 10, 64)
+		if parseErr != nil {
+			log.Fatalf("❌ ERROR: Invalid ALLOWED_GROUP_ID format! Must be an integer like -100xxxxxxxxxx")
+		}
+	}
+
 	ctx := context.Background()
 
 	// 3. Initialize Gemini Client
@@ -67,12 +79,17 @@ func main() {
 			continue
 		}
 
+		// ഗ്രൂപ്പ് ഐഡി ഫിൽട്ടർ ചെയ്യൽ (സെറ്റ് ചെയ്തിട്ടുണ്ടെങ്കിൽ മാത്രം ചെക്ക് ചെയ്യും)
+		if allowedGroupID != 0 && update.Message.Chat.ID != allowedGroupID {
+			continue // മറ്റ് ചാറ്റുകളിൽ നിന്നുള്ള മെസ്സേജുകൾ ഒഴിവാക്കുന്നു
+		}
+
 		// Photos handle ചെയ്യാൻ
 		if len(update.Message.Photo) > 0 {
 			go handleMedia(ctx, bot, client, update.Message, "photo")
 		}
 
-		// Short Video Clips handle ചെയ്യാൻ
+		// Videos handle ചെയ്യാൻ (YouTube/Insta ഡൗൺലോഡർ ബോട്ട് അയക്കുന്നവ ഉൾപ്പെടെ)
 		if update.Message.Video != nil {
 			go handleMedia(ctx, bot, client, update.Message, "video")
 		}
@@ -130,8 +147,8 @@ Provide response in this exact format:
 🎭 **Main Actors in scene:** [Names if visible]
 📝 **Short Summary:** [1-2 sentences]`
 
-	// Gemini 2.5 Flash API Call
-	genResp, err := client.Models.GenerateContent(ctx, "gemini-3.6-flash", []*genai.Content{
+	// Gemini 2.0 Flash API Call
+	genResp, err := client.Models.GenerateContent(ctx, "gemini-2.0-flash", []*genai.Content{
 		{
 			Parts: []*genai.Part{
 				{
