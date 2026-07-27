@@ -75,7 +75,6 @@ func main() {
 
 	// Update handling loop
 	for update := range updates {
-		// Normal message അല്ലെങ്കിൽ Channel Post ഉണ്ടോ എന്ന് ചെക്ക് ചെയ്യുന്നു
 		msg := update.Message
 		if msg == nil {
 			msg = update.ChannelPost
@@ -90,20 +89,26 @@ func main() {
 			continue
 		}
 
-		// സ്വന്തം ബോട്ട് അയക്കുന്ന മെസ്സേജുകൾ പ്രോസസ്സ് ചെയ്യാതിരിക്കാൻ
+		// സ്വന്തം ബോട്ട് അയക്കുന്ന മെസ്സേജുകൾ ഒഴിവാക്കാൻ
 		if msg.From != nil && msg.From.ID == bot.Self.ID {
 			continue
 		}
 
-		// Photos handle ചെയ്യാൻ (മറ്റ് ബോട്ടുകൾ അയക്കുന്നത് ഉൾപ്പെടെ)
+		// Photos handle ചെയ്യാൻ
 		if len(msg.Photo) > 0 {
 			go handleMedia(ctx, bot, client, msg, "photo")
 			continue
 		}
 
-		// Videos handle ചെയ്യാൻ (മറ്റ് ബോട്ടുകൾ അയക്കുന്നത് ഉൾപ്പെടെ)
+		// Videos handle ചെയ്യാൻ
 		if msg.Video != nil {
 			go handleMedia(ctx, bot, client, msg, "video")
+			continue
+		}
+
+		// Downloader Bot അയക്കുന്ന Document type Video-കൾ handle ചെയ്യാൻ
+		if msg.Document != nil {
+			go handleMedia(ctx, bot, client, msg, "document_video")
 			continue
 		}
 	}
@@ -112,8 +117,6 @@ func main() {
 func handleMedia(ctx context.Context, bot *tgbotapi.BotAPI, client *genai.Client, msg *tgbotapi.Message, mediaType string) {
 	chatID := msg.Chat.ID
 
-	statusMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "🔎 Media analyze cheyyunnu... Please wait!"))
-
 	var fileID string
 	var mimeType string
 
@@ -121,15 +124,29 @@ func handleMedia(ctx context.Context, bot *tgbotapi.BotAPI, client *genai.Client
 		photos := msg.Photo
 		fileID = photos[len(photos)-1].FileID
 		mimeType = "image/jpeg"
-	} else if mediaType == "video" {
+	} else if mediaType == "video" || mediaType == "document_video" {
+		var fileSize int
+		if mediaType == "video" {
+			fileID = msg.Video.FileID
+			fileSize = msg.Video.FileSize
+		} else {
+			// Check if document is actually video/image
+			if msg.Document.MimeType != "video/mp4" && msg.Document.MimeType != "video/mkv" && msg.Document.MimeType != "image/jpeg" && msg.Document.MimeType != "image/png" {
+				return
+			}
+			fileID = msg.Document.FileID
+			fileSize = msg.Document.FileSize
+		}
+
 		// 20MB Max size limit check
-		if msg.Video.FileSize > 20*1024*1024 {
+		if fileSize > 20*1024*1024 {
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ Video size is too large! Please send clips under 20MB."))
 			return
 		}
-		fileID = msg.Video.FileID
 		mimeType = "video/mp4"
 	}
+
+	statusMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "🔎 Media analyze cheyyunnu... Please wait!"))
 
 	// Telegram Server-ൽ നിന്ന് Direct Link എടുക്കുന്നു
 	fileURL, err := bot.GetFileDirectURL(fileID)
@@ -192,7 +209,7 @@ Provide response in this exact format:
 	if len(genResp.Candidates) > 0 && genResp.Candidates[0].Content != nil {
 		replyText := genResp.Candidates[0].Content.Parts[0].Text
 		reply := tgbotapi.NewMessage(chatID, replyText)
-		reply.ReplyToMessageID = msg.MessageID // ആ നിർദ്ദിഷ്ട വീഡിയോക്ക്/ഫോട്ടോയ്ക്ക് തന്നെയ Reply കൊടുക്കും
+		reply.ReplyToMessageID = msg.MessageID
 		reply.ParseMode = "Markdown"
 		bot.Send(reply)
 	} else {
