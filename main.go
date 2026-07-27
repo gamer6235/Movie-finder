@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	// 1. Render Port Scanner സപ്പോർട്ടിനായുള്ള Dummy HTTP Server
+	// 1. Dummy HTTP Server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -31,24 +31,19 @@ func main() {
 
 	// 2. Fetch Environment Variables
 	telegramToken := os.Getenv("TELEGRAM_TOKEN")
-	if telegramToken == "" || telegramToken == "YOUR_TELEGRAM_BOT_TOKEN" {
-		log.Fatal("❌ ERROR: TELEGRAM_TOKEN environment variable is missing or invalid!")
+	if telegramToken == "" {
+		log.Fatal("❌ ERROR: TELEGRAM_TOKEN missing!")
 	}
 
 	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
-	if geminiAPIKey == "" || geminiAPIKey == "YOUR_GEMINI_API_KEY" {
-		log.Fatal("❌ ERROR: GEMINI_API_KEY environment variable is missing or invalid!")
+	if geminiAPIKey == "" {
+		log.Fatal("❌ ERROR: GEMINI_API_KEY missing!")
 	}
 
-	// Allowed Group ID എടുക്കുന്നു
 	allowedGroupIDStr := os.Getenv("ALLOWED_GROUP_ID")
 	var allowedGroupID int64 = 0
 	if allowedGroupIDStr != "" {
-		var parseErr error
-		allowedGroupID, parseErr = strconv.ParseInt(allowedGroupIDStr, 10, 64)
-		if parseErr != nil {
-			log.Fatalf("❌ ERROR: Invalid ALLOWED_GROUP_ID format! Must be an integer like -100xxxxxxxxxx")
-		}
+		allowedGroupID, _ = strconv.ParseInt(allowedGroupIDStr, 10, 64)
 	}
 
 	ctx := context.Background()
@@ -64,10 +59,10 @@ func main() {
 	// 4. Initialize Telegram Bot
 	bot, err := tgbotapi.NewBotAPI(telegramToken)
 	if err != nil {
-		log.Fatalf("Telegram Bot API initialization failed: %v. Check TELEGRAM_TOKEN!", err)
+		log.Fatalf("Telegram Bot API error: %v", err)
 	}
 
-	log.Printf("🚀 Go Bot Successfully Started as @%s", bot.Self.UserName)
+	log.Printf("🚀 Go Bot Started as @%s", bot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -79,36 +74,35 @@ func main() {
 		if msg == nil {
 			msg = update.ChannelPost
 		}
-
 		if msg == nil {
 			continue
 		}
 
-		// ഗ്രൂപ്പ് ഐഡി ഫിൽട്ടർ ചെയ്യൽ (സെറ്റ് ചെയ്തിട്ടുണ്ടെങ്കിൽ മാത്രം)
+		// Check Allowed Group
 		if allowedGroupID != 0 && msg.Chat.ID != allowedGroupID {
 			continue
 		}
 
-		// സ്വന്തം ബോട്ട് അയക്കുന്ന മെസ്സേജുകൾ ഒഴിവാക്കാൻ
+		// Avoid self loops
 		if msg.From != nil && msg.From.ID == bot.Self.ID {
 			continue
 		}
 
-		// Photos handle ചെയ്യാൻ
+		// Photos
 		if len(msg.Photo) > 0 {
 			go handleMedia(ctx, bot, client, msg, "photo")
 			continue
 		}
 
-		// Videos handle ചെയ്യാൻ
+		// Direct Videos
 		if msg.Video != nil {
 			go handleMedia(ctx, bot, client, msg, "video")
 			continue
 		}
 
-		// Downloader Bot അയക്കുന്ന Document type Video-കൾ handle ചെയ്യാൻ
+		// Video/Media sent as Documents by Downloader Bots
 		if msg.Document != nil {
-			go handleMedia(ctx, bot, client, msg, "document_video")
+			go handleMedia(ctx, bot, client, msg, "document")
 			continue
 		}
 	}
@@ -118,58 +112,54 @@ func handleMedia(ctx context.Context, bot *tgbotapi.BotAPI, client *genai.Client
 	chatID := msg.Chat.ID
 
 	var fileID string
-	var mimeType string
+	var mimeType string = "video/mp4"
 
 	if mediaType == "photo" {
 		photos := msg.Photo
 		fileID = photos[len(photos)-1].FileID
 		mimeType = "image/jpeg"
-	} else if mediaType == "video" || mediaType == "document_video" {
-		var fileSize int
-		if mediaType == "video" {
-			fileID = msg.Video.FileID
-			fileSize = msg.Video.FileSize
-		} else {
-			// Check if document is actually video/image
-			if msg.Document.MimeType != "video/mp4" && msg.Document.MimeType != "video/mkv" && msg.Document.MimeType != "image/jpeg" && msg.Document.MimeType != "image/png" {
-				return
-			}
-			fileID = msg.Document.FileID
-			fileSize = msg.Document.FileSize
-		}
-
-		// 20MB Max size limit check
-		if fileSize > 20*1024*1024 {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Video size is too large! Please send clips under 20MB."))
+	} else if mediaType == "video" {
+		if msg.Video.FileSize > 20*1024*1024 {
 			return
 		}
-		mimeType = "video/mp4"
+		fileID = msg.Video.FileID
+	} else if mediaType == "document" {
+		if msg.Document.FileSize > 20*1024*1024 {
+			return
+		}
+		fileID = msg.Document.FileID
+		if msg.Document.MimeType != "" {
+			mimeType = msg.Document.MimeType
+		}
 	}
 
 	statusMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "🔎 Media analyze cheyyunnu... Please wait!"))
 
-	// Telegram Server-ൽ നിന്ന് Direct Link എടുക്കുന്നു
 	fileURL, err := bot.GetFileDirectURL(fileID)
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Download URL ലഭിച്ചില്ല!"))
+		if statusMsg.MessageID != 0 {
+			bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID))
+		}
 		return
 	}
 
-	// Media ഡൗൺലോഡ് ചെയ്യുന്നു
 	resp, err := http.Get(fileURL)
 	if err != nil || resp.StatusCode != http.StatusOK {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Media download ചെയ്യാൻ കഴിഞ്ഞില്ല!"))
+		if statusMsg.MessageID != 0 {
+			bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID))
+		}
 		return
 	}
 	defer resp.Body.Close()
 
 	mediaBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read media file!"))
+		if statusMsg.MessageID != 0 {
+			bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID))
+		}
 		return
 	}
 
-	// Gemini Prompt
 	prompt := `Analyze this movie/series scene carefully. Identify which movie or TV/web series this scene belongs to. 
 Provide response in this exact format:
 🎬 **Title:** [Movie/Series Name]
@@ -177,7 +167,6 @@ Provide response in this exact format:
 🎭 **Main Actors in scene:** [Names if visible]
 📝 **Short Summary:** [1-2 sentences]`
 
-	// Gemini 2.0 Flash API Call
 	genResp, err := client.Models.GenerateContent(ctx, "gemini-3.6-flash", []*genai.Content{
 		{
 			Parts: []*genai.Part{
@@ -194,10 +183,8 @@ Provide response in this exact format:
 		},
 	}, nil)
 
-	// Status message ഡിലീറ്റ് ചെയ്യൽ
 	if statusMsg.MessageID != 0 {
-		deleteMsg := tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID)
-		bot.Request(deleteMsg)
+		bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID))
 	}
 
 	if err != nil {
@@ -205,7 +192,6 @@ Provide response in this exact format:
 		return
 	}
 
-	// ഫലം ടെലിഗ്രാമിൽ അയക്കുന്നു
 	if len(genResp.Candidates) > 0 && genResp.Candidates[0].Content != nil {
 		replyText := genResp.Candidates[0].Content.Parts[0].Text
 		reply := tgbotapi.NewMessage(chatID, replyText)
