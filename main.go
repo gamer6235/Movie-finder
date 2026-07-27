@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -14,7 +13,7 @@ import (
 )
 
 func main() {
-	// Environment variables അല്ലെങ്കിൽ direct keys
+	// Environment variables
 	telegramToken := os.Getenv("TELEGRAM_TOKEN")
 	if telegramToken == "" {
 		telegramToken = "YOUR_TELEGRAM_BOT_TOKEN"
@@ -95,7 +94,7 @@ Provide response in this exact format:
 🎭 **Main Actors in scene:** [Names if visible]
 📝 **Short Summary:** [1-2 sentences]`
 
-	// Gemini 2.5 Flash API Call with inline image
+	// Gemini 2.5 Flash API Call
 	genResp, err := client.Models.GenerateContent(ctx, "gemini-2.5-flash", []*genai.Content{
 		{
 			Parts: []*genai.Part{
