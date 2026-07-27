@@ -131,7 +131,7 @@ Provide response in this exact format:
 📝 **Short Summary:** [1-2 sentences]`
 
 	// Gemini 2.5 Flash API Call
-	genResp, err := client.Models.GenerateContent(ctx, "gemini-2.5-flash", []*genai.Content{
+	genResp, err := client.Models.GenerateContent(ctx, "gemini-3.6-flash", []*genai.Content{
 		{
 			Parts: []*genai.Part{
 				{
