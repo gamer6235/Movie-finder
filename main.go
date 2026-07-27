@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	// 1. Dummy HTTP Server
+	// 1. Dummy HTTP Server for Render
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -88,24 +88,38 @@ func main() {
 			continue
 		}
 
-		// Photos
-		if len(msg.Photo) > 0 {
-			go handleMedia(ctx, bot, client, msg, "photo")
+		// Case A: ഉപയോക്താവ് നേരിട്ട് അയക്കുന്ന Media / Photos / Videos
+		if processMediaMessage(ctx, bot, client, msg) {
 			continue
 		}
 
-		// Direct Videos
-		if msg.Video != nil {
-			go handleMedia(ctx, bot, client, msg, "video")
-			continue
-		}
-
-		// Video/Media sent as Documents by Downloader Bots
-		if msg.Document != nil {
-			go handleMedia(ctx, bot, client, msg, "document")
-			continue
+		// Case B: YT Bot അയച്ച വീഡിയോയിലേക്ക് ഉപയോക്താവ് REPLY ചെയ്യുമ്പോൾ
+		if msg.ReplyToMessage != nil {
+			processMediaMessage(ctx, bot, client, msg.ReplyToMessage)
 		}
 	}
+}
+
+func processMediaMessage(ctx context.Context, bot *tgbotapi.BotAPI, client *genai.Client, msg *tgbotapi.Message) bool {
+	// Direct Photos
+	if len(msg.Photo) > 0 {
+		go handleMedia(ctx, bot, client, msg, "photo")
+		return true
+	}
+
+	// Direct Videos
+	if msg.Video != nil {
+		go handleMedia(ctx, bot, client, msg, "video")
+		return true
+	}
+
+	// Document Videos
+	if msg.Document != nil {
+		go handleMedia(ctx, bot, client, msg, "document")
+		return true
+	}
+
+	return false
 }
 
 func handleMedia(ctx context.Context, bot *tgbotapi.BotAPI, client *genai.Client, msg *tgbotapi.Message, mediaType string) {
