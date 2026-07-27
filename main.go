@@ -8,10 +8,14 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
+	"sync/atomic"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"google.golang.org/genai"
 )
+
+var keyIndex uint64
 
 func main() {
 	// 1. Dummy HTTP Server for Render
@@ -35,10 +39,23 @@ func main() {
 		log.Fatal("❌ ERROR: TELEGRAM_TOKEN missing!")
 	}
 
-	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
-	if geminiAPIKey == "" {
-		log.Fatal("❌ ERROR: GEMINI_API_KEY missing!")
+	// Multiple API Keys split ചെയ്യുന്നു
+	rawKeys := os.Getenv("GEMINI_API_KEYS")
+	if rawKeys == "" {
+		// പഴയ ഒരൊറ്റ Key മാച്ചിംഗിനായി fallback
+		rawKeys = os.Getenv("GEMINI_API_KEY")
 	}
+
+	if rawKeys == "" {
+		log.Fatal("❌ ERROR: GEMINI_API_KEYS environment variable is missing!")
+	}
+
+	apiKeys := strings.Split(rawKeys, ",")
+	for i := range apiKeys {
+		apiKeys[i] = strings.TrimSpace(apiKeys[i])
+	}
+
+	log.Printf("🔑 Loaded %d Gemini API Key(s) for rotation.", len(apiKeys))
 
 	allowedGroupIDStr := os.Getenv("ALLOWED_GROUP_ID")
 	var allowedGroupID int64 = 0
@@ -48,15 +65,7 @@ func main() {
 
 	ctx := context.Background()
 
-	// 3. Initialize Gemini Client
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey: geminiAPIKey,
-	})
-	if err != nil {
-		log.Fatalf("Gemini Client initialization error: %v", err)
-	}
-
-	// 4. Initialize Telegram Bot
+	// 3. Initialize Telegram Bot
 	bot, err := tgbotapi.NewBotAPI(telegramToken)
 	if err != nil {
 		log.Fatalf("Telegram Bot API error: %v", err)
@@ -89,40 +98,37 @@ func main() {
 		}
 
 		// Case A: ഉപയോക്താവ് നേരിട്ട് അയക്കുന്ന Media / Photos / Videos
-		if processMediaMessage(ctx, bot, client, msg) {
+		if processMediaMessage(ctx, bot, apiKeys, msg) {
 			continue
 		}
 
 		// Case B: YT Bot അയച്ച വീഡിയോയിലേക്ക് ഉപയോക്താവ് REPLY ചെയ്യുമ്പോൾ
 		if msg.ReplyToMessage != nil {
-			processMediaMessage(ctx, bot, client, msg.ReplyToMessage)
+			processMediaMessage(ctx, bot, apiKeys, msg.ReplyToMessage)
 		}
 	}
 }
 
-func processMediaMessage(ctx context.Context, bot *tgbotapi.BotAPI, client *genai.Client, msg *tgbotapi.Message) bool {
-	// Direct Photos
+func processMediaMessage(ctx context.Context, bot *tgbotapi.BotAPI, apiKeys []string, msg *tgbotapi.Message) bool {
 	if len(msg.Photo) > 0 {
-		go handleMedia(ctx, bot, client, msg, "photo")
+		go handleMedia(ctx, bot, apiKeys, msg, "photo")
 		return true
 	}
 
-	// Direct Videos
 	if msg.Video != nil {
-		go handleMedia(ctx, bot, client, msg, "video")
+		go handleMedia(ctx, bot, apiKeys, msg, "video")
 		return true
 	}
 
-	// Document Videos
 	if msg.Document != nil {
-		go handleMedia(ctx, bot, client, msg, "document")
+		go handleMedia(ctx, bot, apiKeys, msg, "document")
 		return true
 	}
 
 	return false
 }
 
-func handleMedia(ctx context.Context, bot *tgbotapi.BotAPI, client *genai.Client, msg *tgbotapi.Message, mediaType string) {
+func handleMedia(ctx context.Context, bot *tgbotapi.BotAPI, apiKeys []string, msg *tgbotapi.Message, mediaType string) {
 	chatID := msg.Chat.ID
 
 	var fileID string
@@ -181,32 +187,56 @@ Provide response in this exact format:
 🎭 **Main Actors in scene:** [Names if visible]
 📝 **Short Summary:** [1-2 sentences]`
 
-	genResp, err := client.Models.GenerateContent(ctx, "gemini-3.6-flash", []*genai.Content{
-		{
-			Parts: []*genai.Part{
-				{
-					InlineData: &genai.Blob{
-						MIMEType: mimeType,
-						Data:     mediaBytes,
+	// Key Rotation Logic (വീണ്ടും ട്രൈ ചെയ്യും)
+	var genResp *genai.GenerateContentResponse
+	var genErr error
+
+	totalKeys := len(apiKeys)
+	startIndex := atomic.AddUint64(&keyIndex, 1)
+
+	for i := 0; i < totalKeys; i++ {
+		currentKey := apiKeys[(uint64(i)+startIndex)%uint64(totalKeys)]
+
+		client, err := genai.NewClient(ctx, &genai.ClientConfig{
+			APIKey: currentKey,
+		})
+		if err != nil {
+			continue
+		}
+
+		genResp, genErr = client.Models.GenerateContent(ctx, "gemini-2.0-flash", []*genai.Content{
+			{
+				Parts: []*genai.Part{
+					{
+						InlineData: &genai.Blob{
+							MIMEType: mimeType,
+							Data:     mediaBytes,
+						},
+					},
+					{
+						Text: prompt,
 					},
 				},
-				{
-					Text: prompt,
-				},
 			},
-		},
-	}, nil)
+		}, nil)
+
+		// സക്സസ് ആയാൽ ലൂപ്പ് നിർത്തും
+		if genErr == nil {
+			break
+		}
+		log.Printf("⚠️ Key failed/rate limited. Trying next key... Error: %v", genErr)
+	}
 
 	if statusMsg.MessageID != 0 {
 		bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID))
 	}
 
-	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Gemini Error: %v", err)))
+	if genErr != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ All API Keys are currently rate-limited. Please try again in a minute!"))
 		return
 	}
 
-	if len(genResp.Candidates) > 0 && genResp.Candidates[0].Content != nil {
+	if genResp != nil && len(genResp.Candidates) > 0 && genResp.Candidates[0].Content != nil {
 		replyText := genResp.Candidates[0].Content.Parts[0].Text
 		reply := tgbotapi.NewMessage(chatID, replyText)
 		reply.ReplyToMessageID = msg.MessageID
