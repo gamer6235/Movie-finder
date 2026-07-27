@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	// 1. Render Port Scanner പ്രശ്നം ഒഴിവാക്കാനുള്ള Dummy HTTP Server
+	// 1. Render Port Scanner സപ്പോർട്ടിനായുള്ള Dummy HTTP Server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -75,23 +75,36 @@ func main() {
 
 	// Update handling loop
 	for update := range updates {
-		if update.Message == nil {
+		// Normal message അല്ലെങ്കിൽ Channel Post ഉണ്ടോ എന്ന് ചെക്ക് ചെയ്യുന്നു
+		msg := update.Message
+		if msg == nil {
+			msg = update.ChannelPost
+		}
+
+		if msg == nil {
 			continue
 		}
 
-		// ഗ്രൂപ്പ് ഐഡി ഫിൽട്ടർ ചെയ്യൽ (സെറ്റ് ചെയ്തിട്ടുണ്ടെങ്കിൽ മാത്രം ചെക്ക് ചെയ്യും)
-		if allowedGroupID != 0 && update.Message.Chat.ID != allowedGroupID {
-			continue // മറ്റ് ചാറ്റുകളിൽ നിന്നുള്ള മെസ്സേജുകൾ ഒഴിവാക്കുന്നു
+		// ഗ്രൂപ്പ് ഐഡി ഫിൽട്ടർ ചെയ്യൽ (സെറ്റ് ചെയ്തിട്ടുണ്ടെങ്കിൽ മാത്രം)
+		if allowedGroupID != 0 && msg.Chat.ID != allowedGroupID {
+			continue
 		}
 
-		// Photos handle ചെയ്യാൻ
-		if len(update.Message.Photo) > 0 {
-			go handleMedia(ctx, bot, client, update.Message, "photo")
+		// സ്വന്തം ബോട്ട് അയക്കുന്ന മെസ്സേജുകൾ പ്രോസസ്സ് ചെയ്യാതിരിക്കാൻ
+		if msg.From != nil && msg.From.ID == bot.Self.ID {
+			continue
 		}
 
-		// Videos handle ചെയ്യാൻ (YouTube/Insta ഡൗൺലോഡർ ബോട്ട് അയക്കുന്നവ ഉൾപ്പെടെ)
-		if update.Message.Video != nil {
-			go handleMedia(ctx, bot, client, update.Message, "video")
+		// Photos handle ചെയ്യാൻ (മറ്റ് ബോട്ടുകൾ അയക്കുന്നത് ഉൾപ്പെടെ)
+		if len(msg.Photo) > 0 {
+			go handleMedia(ctx, bot, client, msg, "photo")
+			continue
+		}
+
+		// Videos handle ചെയ്യാൻ (മറ്റ് ബോട്ടുകൾ അയക്കുന്നത് ഉൾപ്പെടെ)
+		if msg.Video != nil {
+			go handleMedia(ctx, bot, client, msg, "video")
+			continue
 		}
 	}
 }
@@ -165,8 +178,10 @@ Provide response in this exact format:
 	}, nil)
 
 	// Status message ഡിലീറ്റ് ചെയ്യൽ
-	deleteMsg := tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID)
-	bot.Request(deleteMsg)
+	if statusMsg.MessageID != 0 {
+		deleteMsg := tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID)
+		bot.Request(deleteMsg)
+	}
 
 	if err != nil {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Gemini Error: %v", err)))
@@ -177,6 +192,7 @@ Provide response in this exact format:
 	if len(genResp.Candidates) > 0 && genResp.Candidates[0].Content != nil {
 		replyText := genResp.Candidates[0].Content.Parts[0].Text
 		reply := tgbotapi.NewMessage(chatID, replyText)
+		reply.ReplyToMessageID = msg.MessageID // ആ നിർദ്ദിഷ്ട വീഡിയോക്ക്/ഫോട്ടോയ്ക്ക് തന്നെയ Reply കൊടുക്കും
 		reply.ParseMode = "Markdown"
 		bot.Send(reply)
 	} else {
