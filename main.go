@@ -13,34 +13,49 @@ import (
 )
 
 func main() {
-	// Environment variables
+	// 1. Render Port Scanner-ne fool cheyyan oru dummy HTTP Server
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	go func() {
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, "Bot is active!")
+		})
+		log.Printf("Dummy Web Server running on port %s", port)
+		if err := http.ListenAndServe(":"+port, nil); err != nil {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
+
+	// 2. Fetch Environment Variables
 	telegramToken := os.Getenv("TELEGRAM_TOKEN")
-	if telegramToken == "" {
-		telegramToken = "YOUR_TELEGRAM_BOT_TOKEN"
+	if telegramToken == "" || telegramToken == "YOUR_TELEGRAM_BOT_TOKEN" {
+		log.Fatal("❌ ERROR: TELEGRAM_TOKEN environment variable is missing or invalid!")
 	}
 
 	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
-	if geminiAPIKey == "" {
-		geminiAPIKey = "YOUR_GEMINI_API_KEY"
+	if geminiAPIKey == "" || geminiAPIKey == "YOUR_GEMINI_API_KEY" {
+		log.Fatal("❌ ERROR: GEMINI_API_KEY environment variable is missing or invalid!")
 	}
 
 	ctx := context.Background()
 
-	// 1. Initialize Gemini Client
+	// 3. Initialize Gemini Client
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey: geminiAPIKey,
 	})
 	if err != nil {
-		log.Fatalf("Gemini Client error: %v", err)
+		log.Fatalf("Gemini Client initialization error: %v", err)
 	}
 
-	// 2. Initialize Telegram Bot
+	// 4. Initialize Telegram Bot
 	bot, err := tgbotapi.NewBotAPI(telegramToken)
 	if err != nil {
-		log.Panic(err)
+		log.Fatalf("Telegram Bot API initialization failed: %v. Check TELEGRAM_TOKEN!", err)
 	}
 
-	log.Printf("🚀 Go Bot Started as %s", bot.Self.UserName)
+	log.Printf("🚀 Go Bot Successfully Started as @%s", bot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -59,8 +74,8 @@ func main() {
 func handlePhoto(ctx context.Context, bot *tgbotapi.BotAPI, client *genai.Client, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 
-	// Send processing message
-	statusMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "🔎 Frame analyze cheyyunnu... Please wait!"))
+	// Send processing status message
+	statusMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "🔎 Scene analyze cheyyunnu... Please wait!"))
 
 	// Get highest resolution photo
 	photos := msg.Photo
@@ -68,21 +83,21 @@ func handlePhoto(ctx context.Context, bot *tgbotapi.BotAPI, client *genai.Client
 
 	fileURL, err := bot.GetFileDirectURL(largestPhoto.FileID)
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Image download error!"))
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Image download URL error!"))
 		return
 	}
 
 	// Download image bytes
 	resp, err := http.Get(fileURL)
 	if err != nil || resp.StatusCode != http.StatusOK {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Download failure!"))
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Image download failed!"))
 		return
 	}
 	defer resp.Body.Close()
 
 	imgBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Read image error!"))
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to read image data!"))
 		return
 	}
 
@@ -111,18 +126,22 @@ Provide response in this exact format:
 		},
 	}, nil)
 
-	// Delete loading status message
+	// Delete status message
 	deleteMsg := tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID)
 	bot.Request(deleteMsg)
 
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Error: %v", err)))
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Gemini Error: %v", err)))
 		return
 	}
 
 	// Send Gemini result back
-	replyText := genResp.Candidates[0].Content.Parts[0].Text
-	reply := tgbotapi.NewMessage(chatID, replyText)
-	reply.ParseMode = "Markdown"
-	bot.Send(reply)
+	if len(genResp.Candidates) > 0 && genResp.Candidates[0].Content != nil {
+		replyText := genResp.Candidates[0].Content.Parts[0].Text
+		reply := tgbotapi.NewMessage(chatID, replyText)
+		reply.ParseMode = "Markdown"
+		bot.Send(reply)
+	} else {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Could not identify the movie/series."))
+	}
 }
