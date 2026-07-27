@@ -204,7 +204,7 @@ Provide response in this exact format:
 			continue
 		}
 
-		genResp, genErr = client.Models.GenerateContent(ctx, "gemini-2.0-flash", []*genai.Content{
+		genResp, genErr = client.Models.GenerateContent(ctx, "gemini-3.6-flash", []*genai.Content{
 			{
 				Parts: []*genai.Part{
 					{
